@@ -205,3 +205,466 @@ Use Wayfinder to generate TypeScript functions for Laravel routes. Import from `
 - IMPORTANT: Activate `inertia-react-development` when working with Inertia React client-side patterns.
 
 </laravel-boost-guidelines>
+
+
+---
+
+# Pickleball Booking System — Project Context
+
+> Appended manually. All Laravel Boost rules above still apply and take priority.
+> Stack is Laravel 13 + PHP 8.5 + Inertia v3 + React 19 + Tailwind v4.
+
+---
+
+## What this is
+
+A **white-label court booking CMS**. Nothing is hardcoded — the court owner (admin)
+configures everything: venue name, logo, courts, court images, time slots, and price
+per hour. Public users browse courts, see a price preview, book a slot, and pay by
+scanning a **QR image uploaded by the admin** (GCash / Maya).
+
+There is **no payment gateway** (no PayMongo, no Dragonpay). Payment is manual and
+confirmed by the admin. To prevent spam-booking, every unconfirmed booking is a
+**timed hold** — if the user does not pay within N minutes, the booking auto-expires
+and the slot is released back to the public.
+
+---
+
+## Roles
+
+Two roles only, stored in `users.role`:
+
+- `admin` — court owner. Full access under `/admin/*` routes.
+- `user` — books courts. Default for all registrations.
+
+Gate admin routes with middleware that checks `auth()->user()->role === 'admin'`.
+
+---
+
+## Conventions specific to this project
+
+- **ULID primary keys** on every model — `$table->ulid('id')->primary()` in
+  migrations, `use HasUlids;` on the model.
+- **Currency:** Philippine Peso, always formatted as `₱1,234.00`.
+- **Timezone:** `Asia/Manila` — set in `config/app.php`.
+- **File uploads** (court images, payment QR, payment proof screenshots) go to
+  `storage/app/public`, served via `php artisan storage:link`. Store the relative
+  path in the DB and expose a `*_url` accessor on the model.
+- **Sonner** for all toast notifications.
+- **TanStack Table** for admin data tables (bookings list, courts list).
+- Use **Wayfinder** (`@/actions/` or `@/routes/`) for all client-side route
+  references — follow the Boost convention already in this file.
+- On the PHP/Laravel side, use **named routes** and the `route()` helper.
+- Always output **complete file contents**, not partial snippets.
+- Edits are **surgical** — preserve existing working functionality.
+
+---
+
+## Database schema
+
+### users *(extend the starter kit's existing users table)*
+Add to the existing users migration or a new one:
+```php
+$table->string('phone')->nullable()->after('email');
+$table->string('role')->default('user')->after('phone'); // 'admin' | 'user'
+```
+Add `use HasUlids;` to the `User` model and update any factories/seeders that
+assume an integer id.
+
+### settings *(key → value, white-label venue content)*
+```php
+Schema::create('settings', function (Blueprint $table) {
+    $table->ulid('id')->primary();
+    $table->string('key')->unique();
+    $table->text('value')->nullable();
+    $table->timestamps();
+});
+```
+Seed these keys: `venue_name`, `venue_logo_path`, `contact_email`, `contact_phone`,
+`payment_qr_path` (default venue QR), `payment_instructions`, `hold_minutes`
+(default `"5"`).
+
+### courts
+```php
+Schema::create('courts', function (Blueprint $table) {
+    $table->ulid('id')->primary();
+    $table->string('name');
+    $table->text('description')->nullable();
+    $table->string('surface')->nullable();        // e.g. "Indoor" / "Outdoor"
+    $table->string('image_path')->nullable();
+    $table->decimal('price_per_hour', 8, 2)->default(0);
+    $table->string('payment_qr_path')->nullable(); // per-court QR override
+    $table->boolean('is_active')->default(true);
+    $table->unsignedInteger('sort_order')->default(0);
+    $table->timestamps();
+});
+```
+
+### time_slots *(recurring daily windows per court)*
+```php
+Schema::create('time_slots', function (Blueprint $table) {
+    $table->ulid('id')->primary();
+    $table->foreignUlid('court_id')->constrained()->cascadeOnDelete();
+    $table->time('start_time');  // e.g. "08:00"
+    $table->time('end_time');    // e.g. "09:00"
+    $table->boolean('is_active')->default(true);
+    $table->timestamps();
+});
+```
+A time slot is a **daily template** — it is bookable on any date unless a booking
+already exists for that court + slot + date combination.
+
+### bookings *(the core table)*
+```php
+Schema::create('bookings', function (Blueprint $table) {
+    $table->ulid('id')->primary();
+    $table->foreignUlid('user_id')->constrained()->cascadeOnDelete();
+    $table->foreignUlid('court_id')->constrained()->cascadeOnDelete();
+    $table->foreignUlid('time_slot_id')->constrained()->cascadeOnDelete();
+    $table->date('booking_date');
+    $table->string('status')->default('pending_payment');
+    $table->decimal('amount', 8, 2);             // price snapshot at booking time
+    $table->string('reference_code')->unique();   // e.g. "PB-7F3K9Q"
+    $table->timestamp('expires_at')->nullable();  // hold deadline
+    $table->timestamp('paid_at')->nullable();     // when user tapped "I've paid"
+    $table->timestamp('confirmed_at')->nullable();// when admin verified
+    $table->string('payment_proof_path')->nullable();
+    $table->text('notes')->nullable();            // admin note / rejection reason
+    $table->timestamps();
+
+    $table->index(['court_id', 'booking_date', 'status']);
+});
+```
+> No DB unique constraint on (court, slot, date) — expired/rejected/cancelled rows
+> for the same slot must coexist as history. Double-booking is prevented in
+> application code only. See algorithms below.
+
+---
+
+## BookingStatus enum
+
+```php
+// app/Enums/BookingStatus.php
+enum BookingStatus: string
+{
+    case PendingPayment       = 'pending_payment';
+    case AwaitingConfirmation = 'awaiting_confirmation';
+    case Confirmed            = 'confirmed';
+    case Expired              = 'expired';
+    case Rejected             = 'rejected';
+    case Cancelled            = 'cancelled';
+}
+```
+
+Status flow:
+```
+pending_payment  ──(timer expires)──▶  expired       (slot freed)
+      │
+      │ user taps "I've paid"
+      ▼
+awaiting_confirmation  ──(admin rejects)──▶  rejected  (slot freed)
+      │
+      │ admin verifies
+      ▼
+   confirmed  ──(cancel)──▶  cancelled
+```
+
+**Critical:** expiry only ever targets `pending_payment`. A booking that has moved
+to `awaiting_confirmation` must never be expired, even if `expires_at` has passed.
+
+---
+
+## Models
+
+### Court
+```php
+class Court extends Model
+{
+    use HasUlids;
+
+    protected $fillable = [
+        'name', 'description', 'surface', 'image_path',
+        'price_per_hour', 'payment_qr_path', 'is_active', 'sort_order',
+    ];
+
+    protected $casts = [
+        'price_per_hour' => 'decimal:2',
+        'is_active'      => 'boolean',
+    ];
+
+    public function timeSlots(): HasMany
+    {
+        return $this->hasMany(TimeSlot::class);
+    }
+
+    public function bookings(): HasMany
+    {
+        return $this->hasMany(Booking::class);
+    }
+
+    public function getImageUrlAttribute(): ?string
+    {
+        return $this->image_path ? asset('storage/'.$this->image_path) : null;
+    }
+
+    public function priceForHours(float $hours): float
+    {
+        return round($this->price_per_hour * $hours, 2);
+    }
+}
+```
+
+### TimeSlot
+```php
+class TimeSlot extends Model
+{
+    use HasUlids;
+
+    protected $fillable = ['court_id', 'start_time', 'end_time', 'is_active'];
+
+    protected $casts = ['is_active' => 'boolean'];
+
+    public function court(): BelongsTo
+    {
+        return $this->belongsTo(Court::class);
+    }
+
+    public function bookings(): HasMany
+    {
+        return $this->hasMany(Booking::class);
+    }
+
+    public function getDurationHoursAttribute(): float
+    {
+        return Carbon::parse($this->start_time)
+            ->diffInMinutes(Carbon::parse($this->end_time)) / 60;
+    }
+
+    public function getPriceAttribute(): float
+    {
+        return $this->court->priceForHours($this->duration_hours);
+    }
+}
+```
+
+### Booking
+```php
+class Booking extends Model
+{
+    use HasUlids;
+
+    protected $fillable = [
+        'user_id', 'court_id', 'time_slot_id', 'booking_date', 'status',
+        'amount', 'reference_code', 'expires_at', 'paid_at', 'confirmed_at',
+        'payment_proof_path', 'notes',
+    ];
+
+    protected $casts = [
+        'booking_date'   => 'date',
+        'amount'         => 'decimal:2',
+        'status'         => BookingStatus::class,
+        'expires_at'     => 'datetime',
+        'paid_at'        => 'datetime',
+        'confirmed_at'   => 'datetime',
+    ];
+
+    public function user(): BelongsTo { return $this->belongsTo(User::class); }
+    public function court(): BelongsTo { return $this->belongsTo(Court::class); }
+    public function timeSlot(): BelongsTo { return $this->belongsTo(TimeSlot::class); }
+
+    /** Bookings that currently occupy a slot (active holds + confirmed). */
+    public function scopeBlocking(Builder $query): Builder
+    {
+        return $query->where(function (Builder $q) {
+            $q->whereIn('status', [
+                BookingStatus::AwaitingConfirmation,
+                BookingStatus::Confirmed,
+            ])->orWhere(fn (Builder $q2) => $q2
+                ->where('status', BookingStatus::PendingPayment)
+                ->where('expires_at', '>', now())
+            );
+        });
+    }
+}
+```
+
+### Setting *(cached key/value store)*
+```php
+class Setting extends Model
+{
+    use HasUlids;
+
+    protected $fillable = ['key', 'value'];
+
+    public static function get(string $key, mixed $default = null): mixed
+    {
+        return cache()->rememberForever(
+            "setting:{$key}",
+            fn () => static::where('key', $key)->value('value')
+        ) ?? $default;
+    }
+
+    public static function put(string $key, mixed $value): void
+    {
+        static::updateOrCreate(['key' => $key], ['value' => $value]);
+        cache()->forget("setting:{$key}");
+    }
+}
+```
+
+---
+
+## Two core algorithms — do not deviate
+
+### A. Availability check (lazy expiry)
+
+Never trust `status` alone. An expired hold must read as free immediately, before
+any cleanup job runs. Always use the `blocking()` scope:
+
+```php
+$takenSlotIds = Booking::where('court_id', $courtId)
+    ->whereDate('booking_date', $date)
+    ->blocking()
+    ->pluck('time_slot_id');
+
+$availableSlots = TimeSlot::where('court_id', $courtId)
+    ->where('is_active', true)
+    ->whereNotIn('id', $takenSlotIds)
+    ->get();
+```
+
+### B. Booking creation (race condition protection)
+
+Wrap in a DB transaction with `lockForUpdate()`. Re-check availability inside the
+lock so only one of two simultaneous requests can succeed:
+
+```php
+DB::transaction(function () use ($user, $court, $slot, $date): Booking {
+    $alreadyTaken = Booking::where('time_slot_id', $slot->id)
+        ->whereDate('booking_date', $date)
+        ->lockForUpdate()
+        ->blocking()
+        ->exists();
+
+    if ($alreadyTaken) {
+        abort(409, 'That slot was just taken. Please pick another time.');
+    }
+
+    return Booking::create([
+        'user_id'        => $user->id,
+        'court_id'       => $court->id,
+        'time_slot_id'   => $slot->id,
+        'booking_date'   => $date,
+        'status'         => BookingStatus::PendingPayment,
+        'amount'         => $slot->price,
+        'reference_code' => 'PB-'.strtoupper(Str::random(6)),
+        'expires_at'     => now()->addMinutes((int) Setting::get('hold_minutes', 5)),
+    ]);
+});
+```
+
+---
+
+## Expire command + schedule
+
+```php
+// app/Console/Commands/ExpireBookings.php — handle()
+Booking::where('status', BookingStatus::PendingPayment)
+    ->where('expires_at', '<', now())
+    ->update(['status' => BookingStatus::Expired]);
+```
+
+Register in `routes/console.php`:
+```php
+Schedule::command('bookings:expire')->everyMinute();
+```
+
+Server cron (one line, set this up on whichever host you choose):
+```
+* * * * * cd /path/to/app && php artisan schedule:run >> /dev/null 2>&1
+```
+
+> The `blocking()` scope is what actually releases slots instantly. The cron only
+> tidies up the status label in the DB and the user's booking history view.
+
+---
+
+## Payment QR logic
+
+On the booking pay page, show the court's own QR if it has one, otherwise fall back
+to the venue-level QR from settings:
+
+```php
+$qrPath = $booking->court->payment_qr_path
+    ?? Setting::get('payment_qr_path');
+```
+
+---
+
+## Frontend countdown timer
+
+Drive the React countdown off the **server's `expires_at`** timestamp, not a local
+`5:00` counter — so a page refresh doesn't reset it.
+
+```js
+const secondsLeft = Math.max(
+    0,
+    Math.floor((new Date(expires_at) - new Date()) / 1000)
+);
+```
+
+At zero: swap the QR view for "This hold expired — the slot has been released."
+
+---
+
+## Planned routes
+
+```
+Public / user
+  GET  /                           court listing (active only)
+  GET  /courts/{court}             court detail + date picker + available slots
+  POST /bookings                   create hold → redirect to pay page
+  GET  /bookings/{ref}/pay         QR + price + live countdown
+  POST /bookings/{ref}/paid        user marks paid + optional proof upload
+  GET  /my/bookings                user's booking history
+  POST /bookings/{ref}/cancel      user cancels own booking
+
+Admin  (prefix: /admin, middleware: role:admin)
+  GET    /admin                    dashboard (today's bookings, pending count)
+  resource /admin/courts           CRUD + image upload + price + QR
+  resource /admin/courts/{court}/slots   manage time slots
+  GET    /admin/bookings           all bookings (TanStack Table + filters)
+  POST   /admin/bookings/{b}/confirm
+  POST   /admin/bookings/{b}/reject
+  GET    /admin/settings           white-label settings form
+  PUT    /admin/settings
+```
+
+---
+
+## Suggested build order
+
+1. Migrations + `BookingStatus` enum + all models + `Setting` helper
+2. Seeder: admin user + default settings + demo courts + demo slots
+3. Admin: courts CRUD (image upload, price per hour, QR, active toggle)
+4. Admin: time slots per court
+5. Public: court browse → court detail → date picker → available slots (algo A)
+6. Booking create (algo B) → pay page (QR + price preview + countdown)
+7. "I've paid" flow + optional proof upload → `awaiting_confirmation`
+8. Admin: bookings list + confirm / reject actions
+9. `bookings:expire` command + schedule + cron setup note
+10. Admin settings page (venue name, logo, QR, instructions, hold minutes)
+11. Polish: empty states, Sonner toasts, mobile layout
+
+---
+
+## Open decisions (resolve when you reach them)
+
+- **Payment proof:** `payment_proof_path` column exists. Decide if upload is
+  required or optional. Current assumption: optional but encouraged.
+- **QR scope:** venue-level default + optional per-court override (both columns
+  exist). Pay page uses per-court QR if set, else venue QR.
+- **Auth:** assumes users register with an account. Guest booking is a future
+  extension.
+- **Server:** Amazon Lightsail or Hostinger — undecided. Design is server-agnostic.
+  Both support the cron line above.
