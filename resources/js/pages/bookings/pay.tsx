@@ -11,11 +11,7 @@ import { useEffect, useState } from 'react';
 import { paid as markBookingPaid } from '@/actions/App/Http/Controllers/BookingController';
 import InputError from '@/components/input-error';
 import { SiteHeader } from '@/components/site-header';
-import {
-    Dialog,
-    DialogContent,
-    DialogTitle,
-} from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { formatBookingDate, formatPeso } from '@/lib/utils';
@@ -70,7 +66,9 @@ function StatusPanel({
 }) {
     return (
         <div className="flex flex-col items-center gap-3 py-6 text-center">
-            <span className={`flex size-14 items-center justify-center rounded-full ${tone}`}>
+            <span
+                className={`flex size-14 items-center justify-center rounded-full ${tone}`}
+            >
                 {icon}
             </span>
             <h2 className="text-xl font-semibold">{title}</h2>
@@ -145,7 +143,7 @@ export default function BookingPay({ booking, qrUrl, payment }: PayProps) {
             <div className="min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white text-neutral-900 dark:from-emerald-950/40 dark:via-neutral-950 dark:to-neutral-950 dark:text-neutral-100">
                 <SiteHeader />
 
-                <main className="mx-auto w-full max-w-lg px-6 pb-20">
+                <main className="mx-auto w-full max-w-lg px-4 pb-20 sm:px-6">
                     <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
                         <div className="border-b border-neutral-100 bg-neutral-50 px-6 py-4 dark:border-neutral-800 dark:bg-neutral-900/60">
                             <p className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -260,9 +258,15 @@ export default function BookingPay({ booking, qrUrl, payment }: PayProps) {
                                                 Slot held — pay within
                                             </p>
                                             <p className="font-mono text-3xl font-bold text-emerald-700 tabular-nums dark:text-emerald-300">
-                                                {String(minutes).padStart(2, '0')}
+                                                {String(minutes).padStart(
+                                                    2,
+                                                    '0',
+                                                )}
                                                 :
-                                                {String(seconds).padStart(2, '0')}
+                                                {String(seconds).padStart(
+                                                    2,
+                                                    '0',
+                                                )}
                                             </p>
                                         </div>
 
@@ -343,7 +347,9 @@ export default function BookingPay({ booking, qrUrl, payment }: PayProps) {
 
                                             {payment.messenger_link && (
                                                 <a
-                                                    href={payment.messenger_link}
+                                                    href={
+                                                        payment.messenger_link
+                                                    }
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#0084FF] px-5 py-3 font-medium text-white transition-opacity hover:opacity-90"

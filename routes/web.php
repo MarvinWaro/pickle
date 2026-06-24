@@ -22,6 +22,7 @@ Route::post('bookings/{booking:reference_code}/cancel', [BookingController::clas
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
+    Route::get('courts', [CourtController::class, 'index'])->name('courts.index');
 });
 
 require __DIR__.'/admin.php';

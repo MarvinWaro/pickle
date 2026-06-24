@@ -6,6 +6,7 @@ use App\Enums\BookingStatus;
 use App\Models\Booking;
 use App\Models\ClosedDate;
 use App\Models\Court;
+use App\Models\Setting;
 use App\Models\TimeSlot;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -16,6 +17,24 @@ use Inertia\Response;
 
 class CourtController extends Controller
 {
+    /**
+     * Authenticated court browsing inside the app shell.
+     */
+    public function index(): Response
+    {
+        $courts = Court::query()
+            ->where('is_active', true)
+            ->with(['amenities:id,name', 'images'])
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        return Inertia::render('courts/index', [
+            'courts' => $courts,
+            'venueName' => Setting::get('venue_name', config('app.name')),
+        ]);
+    }
+
     /**
      * Public court detail with date-based slot availability (lazy expiry).
      */

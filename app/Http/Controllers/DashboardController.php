@@ -4,10 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Enums\BookingStatus;
 use App\Models\Booking;
-use Carbon\CarbonInterface;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Collection;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -25,52 +23,17 @@ class DashboardController extends Controller
             ]);
         }
 
-        $userId = $request->user()->id;
-
-        $paidBookings = Booking::where('user_id', $userId)
-            ->whereIn('status', [BookingStatus::AwaitingConfirmation, BookingStatus::Confirmed])
-            ->get(['booking_date', 'amount']);
-
-        $bookings = Booking::where('user_id', $userId)
+        // Lifetime player stats are shared globally (see HandleInertiaRequests)
+        // so the persistent profile rail can render them on every page.
+        $bookings = Booking::where('user_id', $request->user()->id)
             ->with(['court:id,name', 'timeSlots' => fn ($query) => $query->orderBy('start_time')])
             ->latest()
             ->limit(25)
             ->get();
 
         return Inertia::render('dashboard', [
-            'stats' => [
-                'total_spent' => round((float) $paidBookings->sum(fn (Booking $booking): float => (float) $booking->amount), 2),
-                'sessions' => $paidBookings->count(),
-                'days_played' => $paidBookings
-                    ->map(fn (Booking $booking): string => $booking->booking_date->toDateString())
-                    ->unique()
-                    ->count(),
-                'streak' => $this->weeklyStreak($paidBookings->pluck('booking_date')),
-            ],
             'bookings' => $bookings->map(fn (Booking $booking): array => $this->bookingRow($booking)),
         ]);
-    }
-
-    /**
-     * Count of consecutive weeks (from the current week backwards) with a booking.
-     *
-     * @param  Collection<int, CarbonInterface>  $dates
-     */
-    private function weeklyStreak(Collection $dates): int
-    {
-        $weeks = $dates
-            ->map(fn (CarbonInterface $date): string => $date->format('o-W'))
-            ->flip();
-
-        $streak = 0;
-        $cursor = Carbon::now()->startOfWeek();
-
-        while ($weeks->has($cursor->format('o-W'))) {
-            $streak++;
-            $cursor->subWeek();
-        }
-
-        return $streak;
     }
 
     /**

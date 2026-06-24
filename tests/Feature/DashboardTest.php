@@ -36,8 +36,8 @@ test('the dashboard reports a user booking stats', function () {
         ->assertOk()
         ->assertInertia(fn ($page) => $page
             ->component('dashboard')
-            ->where('stats.sessions', 1)
-            ->where('stats.days_played', 1)
+            ->where('playerStats.sessions', 1)
+            ->where('playerStats.days_played', 1)
             ->has('bookings', 1)
         );
 });
@@ -51,5 +51,6 @@ test('an admin sees admin dashboard counts', function () {
         ->assertInertia(fn ($page) => $page
             ->component('dashboard')
             ->has('admin')
+            ->where('playerStats', null)
         );
 });
