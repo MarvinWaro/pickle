@@ -149,7 +149,7 @@ export default function CourtShow({
             <div className="min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white text-neutral-900 dark:from-emerald-950/40 dark:via-neutral-950 dark:to-neutral-950 dark:text-neutral-100">
                 <SiteHeader />
 
-                <main className="mx-auto w-full max-w-6xl px-6 pb-20">
+                <main className="mx-auto w-full max-w-6xl px-4 pb-20 sm:px-6">
                     <Link
                         href="/"
                         className="text-sm text-emerald-600 hover:underline dark:text-emerald-400"
@@ -349,10 +349,10 @@ export default function CourtShow({
                                             </p>
                                             <p className="text-xs text-neutral-400">
                                                 On-hold slots are reserved by
-                                                someone who hasn't paid yet — they
-                                                free up automatically if the hold
-                                                expires. This list refreshes on
-                                                its own.
+                                                someone who hasn't paid yet —
+                                                they free up automatically if
+                                                the hold expires. This list
+                                                refreshes on its own.
                                             </p>
                                         </div>
                                     )}
